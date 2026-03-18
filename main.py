@@ -1,14 +1,10 @@
 import base64
 import os
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp.exceptions import ResourceError
-from mcp.server.fastmcp.exceptions import ToolError
-from mcp.server.fastmcp.exceptions import ValidationError
-from typing import Tuple
-from typing import List
-from pydantic import AnyUrl
-from mcp.types import ListResourcesResult, Resource
+from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.fastmcp.exceptions import ResourceError, ToolError, ValidationError
+from typing import Tuple, List
+from pydantic import AnyUrl, BaseModel
+from mcp.types import ListResourcesResult, Resource, ToolAnnotations
 
 # FastMCPのアプリインスタンスを作成
 mcp = FastMCP('mcp_test')
@@ -141,6 +137,58 @@ async def list_templates(ctx: Context, cursor: str = '0') -> ListResourcesResult
     except Exception as e:
         await ctx.error(f"テンプレート一覧の取得中にエラーが発生しました: {e}")
         raise ToolError(f"テンプレート一覧の取得中にエラーが発生しました: {e}")
+
+class OverwriteConfirmation(BaseModel):
+    """
+    上書き確認のためのスキーマ
+    """
+    overwrite: bool
+
+@mcp.tool(
+        annotations=ToolAnnotations(
+            title="テンプレートを保存",    # 人間向けのタイトル
+            readOnlyHint=False,         # ファイルを書き込むので
+            destructiveHint=True,       # 上書き時にデータが消える可能性あり
+            idempotentHint=True,        # 同内容で何度呼んでも結果は同じ
+            openWorldHint=False,        # ローカルファイルのみ、外部通信なし
+        )
+)
+async def save_template(ctx: Context, file_name: str, content: str):
+    """
+    新たなテンプレートファイルを作成・保存します。既に同名のファイルが存在する場合は上書きを確認します。
+    """
+    save_file_name = file_name.replace("..", "")
+    file_path = f"templates/{save_file_name}"
+    await ctx.info(f"テンプレートを保存します: {file_path}")
+
+    # ファイルが既に存在するかチェック
+    try:
+        if os.path.exists(file_path):
+            result = await ctx.elicit(f"ファイル「{save_file_name}」は既に存在します。上書きしますか？", OverwriteConfirmation)
+
+            # ユーザーが拒否またはキャンセルした場合
+            if result.action != "accept":
+                await ctx.warning("ユーザーが上書きをキャンセルしたため、処理を中断します。")
+                return
+            # AcceptedElicitationオブジェクトのdata属性から値を取得
+            if not result.data.overwrite:
+                await ctx.warning("ユーザーが上書きをキャンセルしたため、処理を中断します。")
+                return
+
+    except Exception as e:
+        await ctx.error(f"ファイル存在チェック中にエラーが発生しました: {e}")
+        raise ToolError(f"ファイル存在チェック中にエラーが発生しました: {e}")
+
+    # ファイルを書き込む
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        await ctx.info(f"テンプレートの保存が完了しました: {file_path}")
+    except Exception as e:
+        await ctx.error(f"ファイル書き込み中にエラーが発生しました: {e}")
+        raise ToolError(f"ファイル書き込み中にエラーが発生しました: {e}")
+
+
 
 
 if __name__ == "__main__":
